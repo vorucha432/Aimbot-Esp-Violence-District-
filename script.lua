@@ -53,7 +53,6 @@ local objectEspEnabled = false
 local colors = {
     Generator = Color3.fromRGB(0, 180, 255),
     Pallet = Color3.fromRGB(255, 200, 0),
-    Vault = Color3.fromRGB(0, 255, 100),
     Hook = Color3.fromRGB(255, 50, 50)
 }
 
@@ -203,7 +202,6 @@ local function GetObjectType(obj)
 
     if name:find("generator") or name:find("gen") then return "Generator" end
     if name:find("pallet") or name:find("board") then return "Pallet" end
-    if name:find("vault") or name:find("window") then return "Vault" end
     if name:find("hook") then return "Hook" end
     
     return nil
@@ -426,7 +424,6 @@ ObjTab:CreateToggle({
 
 ObjTab:CreateColorPicker({ Name = "Generators (Генераторы)", Color = colors.Generator, Callback = function(c) colors.Generator = c; UpdateObjectColors() end })
 ObjTab:CreateColorPicker({ Name = "Pallets (Палетки)", Color = colors.Pallet, Callback = function(c) colors.Pallet = c; UpdateObjectColors() end })
-ObjTab:CreateColorPicker({ Name = "Vaulting (Окна/Проемы)", Color = colors.Vault, Callback = function(c) colors.Vault = c; UpdateObjectColors() end })
 ObjTab:CreateColorPicker({ Name = "Hooks (Подвешивание)", Color = colors.Hook, Callback = function(c) colors.Hook = c; UpdateObjectColors() end })
 
 AimTab:CreateToggle({
