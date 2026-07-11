@@ -1,8 +1,9 @@
 --[[
-    Violence District – ESP + Silent Aim + Object ESP + FullBright [PROSTO]
+    Violence District – ESP + Silent Aim + Object ESP + FullBright [PROSTO] - FIXED
     – Player ESP: игроки подсвечены (выжившие зелёным, убийца красным) + Ники над головами
-    – Object ESP: только генераторы, палетки, места для перелезания (Vault) и для подвешивания (Hooks)
-    – Подсветка объектов через чистые цветные Highlights (без надписей и текста)
+    – Object ESP: только генераторы, палетки, проёмы для перелезания (Vault Windows/Walls) и для подвешивания (Hooks)
+    – ИСПРАВЛЕНО: Убрана ошибочная гигантская подсветка стеклянных стен и зданий. Подсвечиваются только сами интерактивные окна.
+    – ИСПРАВЛЕНО: Исправлены вылеты и обрывы ESP при стриминге чанков.
     – Настройка цвета каждого объекта через палитру Rayfield по твоему выбору
     – FullBright: убирает туман, тени и делает мир светлым
 ]]
@@ -200,20 +201,41 @@ local function ESPLoop()
 end
 
 -- ==============================
--- OBJECT ESP (Генераторы, Палетки, Окна, Крюки)
+-- OBJECT ESP (Оптимизированное под проёмы перелезания)
 -- ==============================
 local function GetObjectType(obj)
     local name = obj.Name:lower()
     
+    -- Проверка на генераторы
     if name:find("generator") then
         return "Generator"
-    elseif name:find("pallet") or name:find("board") then
+    end
+    
+    -- Проверка на палетки (доски)
+    if name:find("pallet") or name:find("board") then
         return "Pallet"
-    elseif name:find("vault") or name:find("window") or name:find("obstacle") then
+    end
+    
+    -- Исключаем огромные модели стекол, витрин, стеклянных перегородок зданий
+    if name:find("glass") or name:find("window_large") or name:find("pane") or name:find("wall") then
+        return nil
+    end
+    
+    -- Строгий поиск проёмов для перелезания (окна, заборы, препятствия)
+    -- Обычно в режимах типа DbD/Violence District они называются "Vault", "Window", "Obstacle", "VaultSpot"
+    if name:find("vault") or name:find("window") or name:find("obstacle") then
+        -- Дополнительный фильтр: игнорируем слишком масштабные объекты (здания, каркасы)
+        if obj:IsA("Model") and obj:GetExtentsSize().Magnitude > 25 then
+            return nil
+        end
         return "Vault"
-    elseif name:find("hook") or name:find("hanger") or name:find("suspend") then
+    end
+    
+    -- Крюки для подвешивания игроков
+    if name:find("hook") or name:find("hanger") or name:find("suspend") then
         return "Hook"
     end
+    
     return nil
 end
 
@@ -223,19 +245,22 @@ local function ApplyObjectESP(obj)
     local objType = GetObjectType(obj)
     if objType then
         local color = colors[objType]
-        local target = (obj:IsA("Model") and (obj.PrimaryPart or obj:FindFirstChildOfClass("BasePart"))) or (obj:IsA("BasePart") and obj)
         
-        if target and not ObjectCache[obj] then
-            local hl = Instance.new("Highlight")
-            hl.Name = "VD_ObjESP"
+        -- Убедимся, что это физически отрисовываемый объект
+        if obj:IsA("Model") or obj:IsA("BasePart") then
+            -- Если на объекте уже есть наш Highlight, просто обновим его настройки, чтобы избежать "исчезновений"
+            local hl = ObjectCache[obj] or obj:FindFirstChild("VD_ObjESP")
+            if not hl then
+                hl = Instance.new("Highlight")
+                hl.Name = "VD_ObjESP"
+                hl.Parent = obj
+                ObjectCache[obj] = hl
+            end
             hl.Adornee = obj
             hl.FillColor = color
             hl.OutlineColor = color
             hl.FillTransparency = 0.5
             hl.OutlineTransparency = 0
-            hl.Parent = obj
-            
-            ObjectCache[obj] = hl
         end
     end
 end
@@ -248,12 +273,16 @@ local function UpdateObjectColors()
                 hl.FillColor = colors[objType]
                 hl.OutlineColor = colors[objType]
             end
+        else
+            ObjectCache[obj] = nil
         end
     end
 end
 
 local function ObjectESPLoop()
     StopLoop("ObjectESP")
+    
+    -- Очистка старых перед новым сканом
     for _, hl in pairs(ObjectCache) do
         if hl then hl:Destroy() end
     end
@@ -261,14 +290,28 @@ local function ObjectESPLoop()
 
     if not objectEspEnabled then return end
 
+    -- Первоначальный скан всей карты
     for _, obj in pairs(Workspace:GetDescendants()) do
         ApplyObjectESP(obj)
     end
 
+    -- Отслеживание динамического спавна/стриминга (чтобы подсветка не обрывалась)
     Connections.ObjectESP = Workspace.DescendantAdded:Connect(function(obj)
-        task.wait(0.2)
+        task.wait(0.3) -- Пауза, чтобы объект успел полностью инициализироваться в памяти игры
         if objectEspEnabled then
             ApplyObjectESP(obj)
+        end
+    end)
+    
+    -- Сервисный цикл: проверяем и обновляем подсветку каждые 3 секунды, чтобы исправить "исчезновения" из-за Roblox StreamingEnabled
+    task.spawn(function()
+        while objectEspEnabled and task.wait(3) do
+            for _, obj in pairs(Workspace:GetDescendants()) do
+                local objType = GetObjectType(obj)
+                if objType and not ObjectCache[obj] then
+                    ApplyObjectESP(obj)
+                end
+            end
         end
     end)
 end
