@@ -1,13 +1,9 @@
 --[[
-    Violence District – ESP + Silent Aim + Object ESP + FullBright [PROSTO] - ULTIMATE SAFE EDITION
-    – Player ESP: игроки подсвечены (выжившие зелёным, убийца красным) + Ники над головами
-    – Object ESP: только генераторы (+1 точный индикатор %), палетки, места перелезания (Vault), крюки (Hooks) и ворота (Gates)
-    – ИСПРАВЛЕНО: Убран спам процентов на генераторах (строго 1 маркер прогресса).
-    – ИСПРАВЛЕНО: Полностью исключена подсветка гигантских стен, крыш и коробок.
-    – ИСПРАВЛЕНО: Исправлен баг, из-за которого пропадал ESP генераторов.
-    – ИСПРАВЛЕНО: Окна и проёмы для перелезания (Vault) теперь стабильно и аккуратно подсвечиваются.
-    – Настройка цвета каждого объекта через палитру Rayfield по твоему выбору
-    – FullBright: убирает туман, тени и делает мир светлым
+    Violence District – ESP + Silent Aim + Object ESP + FullBright [ULTIMATE SAFE EDITION]
+    – ИСПРАВЛЕНО: Спам процентов убран. Строго 1 маркер на генератор.
+    – ИСПРАВЛЕНО: Убрана подсветка зданий, огромных коробок и крыш (добавлен лимит размера).
+    – ИСПРАВЛЕНО: Добавлен текстовый резерв ESP (Текст видно ВСЕГДА, даже если Roblox достиг лимита в 31 Highlight).
+    – ДОБАВЛЕНО: Ворота (Gate/Exit), корректный поиск Vault.
 ]]
 
 local Players = game:GetService("Players")
@@ -49,9 +45,8 @@ local showNames = false
 local silentAim = false
 local aimSmooth = 0.3
 local fullBrightEnabled = false
-
--- Настройки Object ESP
 local objectEspEnabled = false
+
 local colors = {
     Generator = Color3.fromRGB(0, 180, 255),
     Pallet = Color3.fromRGB(255, 200, 0),
@@ -63,51 +58,32 @@ local colors = {
 local Connections = {}
 local Cache = {} 
 local ObjectCache = {}
-local GeneratorUIs = {}
+local ObjectUIs = {}
 
--- Переменные для бэкапа оригинального освещения
 local origBrightness = Lighting.Brightness
 local origClockTime = Lighting.ClockTime
 local origFogEnd = Lighting.FogEnd
 local origGlobalShadows = Lighting.GlobalShadows
 
 -- ==============================
--- ОЧИСТКА ESP И ОБЪЕКТОВ
+-- ОЧИСТКА ESP
 -- ==============================
 local function ClearESP()
-    -- Чистим игроков
-    for char, elements in pairs(Cache) do
+    for _, elements in pairs(Cache) do
         if elements.Highlight then elements.Highlight:Destroy() end
         if elements.Billboard then elements.Billboard:Destroy() end
     end
     table.clear(Cache)
     
-    -- Чистим объекты
-    for _, hl in pairs(ObjectCache) do
-        if hl then hl:Destroy() end
-    end
+    for _, hl in pairs(ObjectCache) do if hl then hl:Destroy() end end
     table.clear(ObjectCache)
     
-    -- Чистим UI процентов генераторов
-    for _, ui in pairs(GeneratorUIs) do
-        if ui then ui:Destroy() end
-    end
-    table.clear(GeneratorUIs)
-    
-    -- Чистка остатков
-    for _, plr in pairs(Players:GetPlayers()) do
-        if plr.Character then
-            local hl = plr.Character:FindFirstChild("VD_ESP")
-            if hl then hl:Destroy() end
-            local head = plr.Character:FindFirstChild("Head")
-            local bill = head and head:FindFirstChild("VD_Name")
-            if bill then bill:Destroy() end
-        end
-    end
+    for _, ui in pairs(ObjectUIs) do if ui then ui:Destroy() end end
+    table.clear(ObjectUIs)
 
     for _, obj in pairs(Workspace:GetDescendants()) do
-        if obj.Name == "VD_ObjESP" or obj.Name == "VD_GenPercent" then
-            obj:Destroy()
+        if obj.Name == "VD_ObjESP" or obj.Name == "VD_ObjUI" or obj.Name == "VD_ESP" or obj.Name == "VD_Name" then
+            pcall(function() obj:Destroy() end)
         end
     end
 end
@@ -124,13 +100,7 @@ end
 -- ==============================
 local function ESPLoop()
     StopLoop("ESP")
-    if not espEnabled then 
-        for char, elements in pairs(Cache) do
-            if elements.Highlight then elements.Highlight:Destroy(); elements.Highlight = nil end
-            if elements.Billboard then elements.Billboard:Destroy(); elements.Billboard = nil end
-        end
-        return 
-    end
+    if not espEnabled then ClearESP() return end
 
     Connections.ESP = RunService.Heartbeat:Connect(function()
         for _, plr in pairs(Players:GetPlayers()) do
@@ -147,9 +117,7 @@ local function ESPLoop()
 
                     local color = isKiller and Color3.new(1,0,0) or Color3.new(0,1,0)
 
-                    if not Cache[char] then
-                        Cache[char] = {}
-                    end
+                    if not Cache[char] then Cache[char] = {} end
 
                     local hl = Cache[char].Highlight or char:FindFirstChild("VD_ESP")
                     if not hl then
@@ -201,94 +169,54 @@ local function ESPLoop()
                 end
             end
         end
-        
-        for char, _ in pairs(Cache) do
-            if not char or not char.Parent then
-                Cache[char] = nil
-            end
-        end
     end)
 end
 
 -- ==============================
--- СТРОГИЙ СОРТИРОВЩИК ОБЪЕКТОВ ESP
+-- СИСТЕМА ФИЛЬТРАЦИИ ОБЪЕКТОВ
 -- ==============================
+local function GetObjSize(obj)
+    if obj:IsA("Model") then
+        local _, size = obj:GetBoundingBox()
+        return size.Magnitude
+    elseif obj:IsA("BasePart") then
+        return obj.Size.Magnitude
+    end
+    return 0
+end
+
 local function GetObjectType(obj)
     local name = obj.Name:lower()
     
-    -- Пропускаем элементы локального игрока и других выживших/убийц
+    -- Исключаем игроков и хуманоидов
     if obj:FindFirstAncestorOfClass("Player") or obj:FindFirstAncestorOfClass("Character") then return nil end
+    if obj:IsA("Player") or obj:FindFirstChild("Humanoid") then return nil end
 
-    -- Строго генераторы
-    if name == "generator" or name:find("^generator") then
-        return "Generator"
-    end
-    
-    -- Строго палетки
-    if name == "pallet" or name == "palletmodel" then
-        return "Pallet"
-    end
-    
-    -- Строго места для перелезания (Окна/Vault)
-    if name == "vault" or name == "vaulting" or name == "vaultspot" or name:find("vault_obstacle") then
-        -- Фильтруем огромные объекты по размеру
-        local size = 0
-        if obj:IsA("Model") then
-            size = obj:GetExtentsSize().Magnitude
-        elseif obj:IsA("BasePart") then
-            size = obj.Size.Magnitude
-        end
-        if size > 25 then return nil end -- Защита от выделения зданий
-        return "Vault"
-    end
-    
-    -- Строго крюки
-    if name == "hook" or name == "hookmodel" then
-        return "Hook"
-    end
+    -- Жестко исключаем геометрию карты (чтобы не светились здания и коробки)
+    if name:find("wall") or name:find("floor") or name:find("glass") or name:find("room") or name:find("building") or name:find("roof") or name:find("container") then return nil end
 
-    -- Ворота побега (Рубильники и проёмы ворот)
-    if name == "gateswitch" or name == "escapeswitch" or name == "exitgate" or name == "gate_switch" then
-        -- Исключаем огромные части карты
-        local size = 0
-        if obj:IsA("Model") then
-            size = obj:GetExtentsSize().Magnitude
-        elseif obj:IsA("BasePart") then
-            size = obj.Size.Magnitude
-        end
-        if size > 35 then return nil end -- Защита от выделения гигантских стен ворот
-        return "Gate"
-    end
+    -- Проверка на гигантские размеры (защита от подсветки целых зданий)
+    local size = GetObjSize(obj)
+    if size > 35 then return nil end 
+
+    if name:find("generator") or name:find("gen") then return "Generator" end
+    if name:find("pallet") or name:find("board") then return "Pallet" end
+    if name:find("vault") or name:find("window") then return "Vault" end
+    if name:find("hook") then return "Hook" end
+    if name:find("gate") or name:find("exit") or name:find("escape") then return "Gate" end
     
     return nil
 end
 
--- Предотвращение наложений на родительские объекты
-local function IsAlreadyTracked(obj)
-    local current = obj.Parent
-    while current and current ~= Workspace do
-        if ObjectCache[current] then
-            return true
-        end
-        current = current.Parent
-    end
-    return false
-end
-
--- Получить процент починки генератора
 local function GetGeneratorProgress(gen)
-    local progress = gen:GetAttribute("Progress") or gen:GetAttribute("Percent") or gen:GetAttribute("Repair")
-    if progress then
-        return math.clamp(math.floor(progress), 0, 100)
-    end
+    local p = gen:GetAttribute("Progress") or gen:GetAttribute("Percent") or gen:GetAttribute("Repair")
+    if p then return math.clamp(math.floor(p), 0, 100) end
     
     for _, v in pairs(gen:GetDescendants()) do
         if v:IsA("NumberValue") or v:IsA("IntValue") then
             local vn = v.Name:lower()
-            if vn:find("progress") or vn:find("percent") or vn:find("repair") or vn:find("value") then
-                if v.Value <= 1 and v.Value > 0 then
-                    return math.clamp(math.floor(v.Value * 100), 0, 100)
-                end
+            if vn:find("progress") or vn:find("percent") or vn:find("repair") then
+                if v.Value <= 1 and v.Value > 0 then return math.clamp(math.floor(v.Value * 100), 0, 100) end
                 return math.clamp(math.floor(v.Value), 0, 100)
             end
         end
@@ -300,52 +228,70 @@ local function ApplyObjectESP(obj)
     if not objectEspEnabled then return end
     
     local objType = GetObjectType(obj)
-    if objType then
-        if IsAlreadyTracked(obj) then return end
+    if not objType then return end
 
-        local color = colors[objType]
-        
-        if obj:IsA("Model") or obj:IsA("BasePart") then
-            -- Highlight подсветка
-            local hl = ObjectCache[obj] or obj:FindFirstChild("VD_ObjESP")
-            if not hl then
-                hl = Instance.new("Highlight")
-                hl.Name = "VD_ObjESP"
-                hl.Parent = obj
-                ObjectCache[obj] = hl
-            end
-            hl.Adornee = obj
-            hl.FillColor = color
-            hl.OutlineColor = color
-            hl.FillTransparency = 0.5
-            hl.OutlineTransparency = 0
-            
-            -- Если это генератор, вешаем СТРОГО один индикатор процентов починки
-            if objType == "Generator" then
-                local targetPart = obj:IsA("Model") and (obj.PrimaryPart or obj:FindFirstChild("Engine") or obj:FindFirstChild("Body") or obj:FindFirstChildOfClass("BasePart")) or obj
-                if targetPart and not GeneratorUIs[obj] and not targetPart:FindFirstChild("VD_GenPercent") then
-                    local bill = Instance.new("BillboardGui")
-                    bill.Name = "VD_GenPercent"
-                    bill.Size = UDim2.new(0, 100, 0, 30)
-                    bill.AlwaysOnTop = true
-                    bill.StudsOffset = Vector3.new(0, 4, 0)
-                    
-                    local label = Instance.new("TextLabel")
-                    label.Size = UDim2.new(1, 0, 1, 0)
-                    label.BackgroundTransparency = 1
-                    label.Text = "0%"
-                    label.TextColor3 = colors.Generator
-                    label.TextStrokeColor3 = Color3.new(0, 0, 0)
-                    label.TextStrokeTransparency = 0
-                    label.Font = Enum.Font.GothamBold
-                    label.TextSize = 14
-                    label.Parent = bill
-                    
-                    bill.Parent = targetPart
-                    GeneratorUIs[obj] = bill
-                end
-            end
+    if not (obj:IsA("Model") or obj:IsA("BasePart")) then return end
+
+    -- ЗАЩИТА ОТ НАЛОЖЕНИЙ (Если родитель уже подсвечен, игнорируем)
+    local ancestor = obj.Parent
+    while ancestor and ancestor ~= Workspace do
+        if ObjectCache[ancestor] then return end 
+        ancestor = ancestor.Parent
+    end
+
+    -- ЕСЛИ МЫ НАШЛИ КОРЕНЬ МОДЕЛИ, ОЧИЩАЕМ ЕЁ ДЕТАЛИ (Решает проблему кучи процентов на одном гене)
+    for _, child in pairs(obj:GetDescendants()) do
+        if ObjectCache[child] then
+            ObjectCache[child]:Destroy()
+            ObjectCache[child] = nil
         end
+        if ObjectUIs[child] then
+            ObjectUIs[child]:Destroy()
+            ObjectUIs[child] = nil
+        end
+    end
+
+    local color = colors[objType]
+    
+    -- HIGHLIGHT (Может пропадать из-за лимита Roblox в 31 штуку, это не баг скрипта)
+    local hl = ObjectCache[obj] or obj:FindFirstChild("VD_ObjESP")
+    if not hl then
+        hl = Instance.new("Highlight")
+        hl.Name = "VD_ObjESP"
+        hl.Parent = obj
+        ObjectCache[obj] = hl
+    end
+    hl.Adornee = obj
+    hl.FillColor = color
+    hl.OutlineColor = color
+    hl.FillTransparency = 0.5
+    hl.OutlineTransparency = 0
+    
+    -- ТЕКСТОВЫЙ МАРКЕР (Работает ВСЕГДА, резерв для ESP)
+    local targetPart = obj:IsA("Model") and (obj.PrimaryPart or obj:FindFirstChildOfClass("BasePart")) or obj
+    if targetPart and not ObjectUIs[obj] then
+        local existing = targetPart:FindFirstChild("VD_ObjUI")
+        if existing then existing:Destroy() end
+
+        local bill = Instance.new("BillboardGui")
+        bill.Name = "VD_ObjUI"
+        bill.Size = UDim2.new(0, 100, 0, 30)
+        bill.AlwaysOnTop = true
+        bill.StudsOffset = Vector3.new(0, 3.5, 0)
+        
+        local label = Instance.new("TextLabel")
+        label.Size = UDim2.new(1, 0, 1, 0)
+        label.BackgroundTransparency = 1
+        label.Text = objType == "Generator" and "0%" or objType
+        label.TextColor3 = color
+        label.TextStrokeColor3 = Color3.new(0, 0, 0)
+        label.TextStrokeTransparency = 0
+        label.Font = Enum.Font.GothamBold
+        label.TextSize = objType == "Generator" and 15 or 12
+        label.Parent = bill
+        
+        bill.Parent = targetPart
+        ObjectUIs[obj] = bill
     end
 end
 
@@ -356,13 +302,15 @@ local function UpdateObjectColors()
             if objType then
                 hl.FillColor = colors[objType]
                 hl.OutlineColor = colors[objType]
-                
-                if objType == "Generator" and GeneratorUIs[obj] then
-                    GeneratorUIs[obj].TextLabel.TextColor3 = colors.Generator
-                end
             end
-        else
-            ObjectCache[obj] = nil
+        end
+    end
+    for obj, ui in pairs(ObjectUIs) do
+        if ui and ui.Parent then
+            local objType = GetObjectType(obj)
+            if objType then
+                ui.TextLabel.TextColor3 = colors[objType]
+            end
         end
     end
 end
@@ -370,42 +318,32 @@ end
 local function ObjectESPLoop()
     StopLoop("ObjectESP")
     
-    -- Полная очистка перед новым циклом
     for _, hl in pairs(ObjectCache) do if hl then hl:Destroy() end end
     table.clear(ObjectCache)
-    for _, ui in pairs(GeneratorUIs) do if ui then ui:Destroy() end end
-    table.clear(GeneratorUIs)
+    for _, ui in pairs(ObjectUIs) do if ui then ui:Destroy() end end
+    table.clear(ObjectUIs)
 
     if not objectEspEnabled then return end
 
-    -- Первоначальный поиск объектов
     for _, obj in pairs(Workspace:GetDescendants()) do
         ApplyObjectESP(obj)
     end
 
-    -- Отслеживание динамического спавна/стриминга (чтобы ничего не пропадало)
     Connections.ObjectESP = Workspace.DescendantAdded:Connect(function(obj)
         task.wait(0.3)
-        if objectEspEnabled then
-            ApplyObjectESP(obj)
-        end
+        if objectEspEnabled then ApplyObjectESP(obj) end
     end)
     
-    -- Сервисный цикл обновления процентов и поддержания стабильной детекции
     task.spawn(function()
         while objectEspEnabled do
             for _, obj in pairs(Workspace:GetDescendants()) do
                 local objType = GetObjectType(obj)
                 if objType then
-                    -- Если объект прогрузился заново, восстанавливаем подсветку
-                    if not ObjectCache[obj] then
-                        ApplyObjectESP(obj)
-                    end
+                    if not ObjectCache[obj] then ApplyObjectESP(obj) end
                     
-                    -- Обновляем проценты генераторов
-                    if objType == "Generator" and GeneratorUIs[obj] then
-                        local progress = GetGeneratorProgress(obj)
-                        GeneratorUIs[obj].TextLabel.Text = tostring(progress) .. "%"
+                    -- Обновление процентов только для генераторов
+                    if objType == "Generator" and ObjectUIs[obj] then
+                        ObjectUIs[obj].TextLabel.Text = tostring(GetGeneratorProgress(obj)) .. "%"
                     end
                 end
             end
@@ -467,7 +405,6 @@ end
 -- GUI (Rayfield)
 -- ==============================
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
-
 local Window = Rayfield:CreateWindow({
     Name = "VD ESP + Aim [PROSTO]",
     LoadingTitle = "ESP & Silent Aim",
@@ -482,88 +419,34 @@ local ObjTab = Window:CreateTab("📦 Object ESP")
 local AimTab = Window:CreateTab("🎯 Aim")
 local MiscTab = Window:CreateTab("⚙️ Misc")
 
--- Вкладка Игроков
 ESPTab:CreateToggle({
     Name = "ESP Players",
     CurrentValue = false,
-    Callback = function(v)
-        espEnabled = v
-        ESPLoop()
-    end
+    Callback = function(v) espEnabled = v; ESPLoop() end
 })
 
 ESPTab:CreateToggle({
     Name = "Show Names",
     CurrentValue = false,
-    Callback = function(v)
-        showNames = v
-        if espEnabled then ESPLoop() end
-    end
+    Callback = function(v) showNames = v; if espEnabled then ESPLoop() end end
 })
 
--- Вкладка Объектов
 ObjTab:CreateToggle({
     Name = "Enable Object ESP",
     CurrentValue = false,
-    Callback = function(v)
-        objectEspEnabled = v
-        ObjectESPLoop()
-    end
+    Callback = function(v) objectEspEnabled = v; ObjectESPLoop() end
 })
 
-ObjTab:CreateColorPicker({
-    Name = "Generators (Генераторы)",
-    Color = colors.Generator,
-    Callback = function(color)
-        colors.Generator = color
-        UpdateObjectColors()
-    end
-})
+ObjTab:CreateColorPicker({ Name = "Generators (Генераторы)", Color = colors.Generator, Callback = function(c) colors.Generator = c; UpdateObjectColors() end })
+ObjTab:CreateColorPicker({ Name = "Pallets (Палетки)", Color = colors.Pallet, Callback = function(c) colors.Pallet = c; UpdateObjectColors() end })
+ObjTab:CreateColorPicker({ Name = "Vaulting (Окна/Проемы)", Color = colors.Vault, Callback = function(c) colors.Vault = c; UpdateObjectColors() end })
+ObjTab:CreateColorPicker({ Name = "Hooks (Подвешивание)", Color = colors.Hook, Callback = function(c) colors.Hook = c; UpdateObjectColors() end })
+ObjTab:CreateColorPicker({ Name = "Exit Gates (Ворота)", Color = colors.Gate, Callback = function(c) colors.Gate = c; UpdateObjectColors() end })
 
-ObjTab:CreateColorPicker({
-    Name = "Pallets (Палетки)",
-    Color = colors.Pallet,
-    Callback = function(color)
-        colors.Pallet = color
-        UpdateObjectColors()
-    end
-})
-
-ObjTab:CreateColorPicker({
-    Name = "Vaulting (Перелезания Vault)",
-    Color = colors.Vault,
-    Callback = function(color)
-        colors.Vault = color
-        UpdateObjectColors()
-    end
-})
-
-ObjTab:CreateColorPicker({
-    Name = "Hooks (Подвешивание)",
-    Color = colors.Hook,
-    Callback = function(color)
-        colors.Hook = color
-        UpdateObjectColors()
-    end
-})
-
-ObjTab:CreateColorPicker({
-    Name = "Exit Gates (Ворота побега)",
-    Color = colors.Gate,
-    Callback = function(color)
-        colors.Gate = color
-        UpdateObjectColors()
-    end
-})
-
--- Вкладка Аима
 AimTab:CreateToggle({
     Name = "Silent Aim",
     CurrentValue = false,
-    Callback = function(v)
-        silentAim = v
-        SilentLoop()
-    end
+    Callback = function(v) silentAim = v; SilentLoop() end
 })
 
 AimTab:CreateSlider({
@@ -571,39 +454,23 @@ AimTab:CreateSlider({
     Range = {0.01, 1},
     Increment = 0.01,
     CurrentValue = 0.3,
-    Callback = function(v)
-        aimSmooth = v
-    end
+    Callback = function(v) aimSmooth = v end
 })
 
--- Вкладка Разного
 MiscTab:CreateToggle({
-    Name = "FullBright (Освещение карты)",
+    Name = "FullBright",
     CurrentValue = false,
-    Callback = function(v)
-        ToggleFullBright(v)
-    end
+    Callback = function(v) ToggleFullBright(v) end
 })
 
 MiscTab:CreateButton({
     Name = "❌ Close Script",
     Callback = function()
-        StopLoop("ESP")
-        StopLoop("Silent")
-        StopLoop("ObjectESP")
-        StopLoop("FullBright")
+        StopLoop("ESP"); StopLoop("Silent"); StopLoop("ObjectESP"); StopLoop("FullBright")
         ToggleFullBright(false)
         ClearESP()
         pcall(function() Rayfield:Destroy() end)
-        print("[GOOD] Скрипт закрыт.")
     end
 })
 
-Rayfield:Notify({
-    Title = "VD ESP + Aim",
-    Content = "Загружено успешно!",
-    Duration = 3
-})
-
-print("[GOOD] Скрипт успешно инициализирован.")
 
