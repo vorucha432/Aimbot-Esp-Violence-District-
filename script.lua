@@ -1,13 +1,17 @@
 --[[
-    Violence District – ESP + Silent Aim + Item ESP [PROSTO] - UPDATED
-    – Исправлены утечки памяти и лаги
-    – Добавлен полноценный Item ESP (генераторы, лут, оружие)
+    Violence District – ESP + Silent Aim + Object ESP + FullBright [PROSTO]
+    – Player ESP: игроки подсвечены (выжившие зелёным, убийца красным) + Ники над головами
+    – Object ESP: только генераторы, палетки, места для перелезания (Vault) и для подвешивания (Hooks)
+    – Подсветка объектов через чистые цветные Highlights (без надписей и текста)
+    – Настройка цвета каждого объекта через палитру Rayfield по твоему выбору
+    – FullBright: убирает туман, тени и делает мир светлым
 ]]
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
+local Lighting = game:GetService("Lighting")
 local LP = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
 
@@ -35,34 +39,51 @@ local function GetClosestPlayer()
 end
 
 -- ==============================
--- ПЕРЕМЕННЫЕ
+-- НАСТРОЙКИ И ПЕРЕМЕННЫЕ
 -- ==============================
 local espEnabled = false
 local showNames = false
 local silentAim = false
 local aimSmooth = 0.3
-local itemEspEnabled = false
+local fullBrightEnabled = false
+
+-- Настройки Object ESP
+local objectEspEnabled = false
+local colors = {
+    Generator = Color3.fromRGB(0, 180, 255),
+    Pallet = Color3.fromRGB(255, 200, 0),
+    Vault = Color3.fromRGB(0, 255, 100),
+    Hook = Color3.fromRGB(255, 50, 50)
+}
 
 local Connections = {}
 local Cache = {} 
-local ItemCache = {}
+local ObjectCache = {}
+
+-- Переменные для бэкапа оригинального освещения
+local origBrightness = Lighting.Brightness
+local origClockTime = Lighting.ClockTime
+local origFogEnd = Lighting.FogEnd
+local origGlobalShadows = Lighting.GlobalShadows
 
 -- ==============================
--- ОЧИСТКА ВСЕХ ВИДОВ ESP
+-- ОЧИСТКА ESP И ОБЪЕКТОВ
 -- ==============================
 local function ClearESP()
+    -- Чистим игроков
     for char, elements in pairs(Cache) do
         if elements.Highlight then elements.Highlight:Destroy() end
         if elements.Billboard then elements.Billboard:Destroy() end
     end
     table.clear(Cache)
     
-    for _, bill in pairs(ItemCache) do
-        if bill then bill:Destroy() end
+    -- Чистим объекты
+    for _, hl in pairs(ObjectCache) do
+        if hl then hl:Destroy() end
     end
-    table.clear(ItemCache)
+    table.clear(ObjectCache)
     
-    -- Чистка остатков в Workspace
+    -- Чистка остатков
     for _, plr in pairs(Players:GetPlayers()) do
         if plr.Character then
             local hl = plr.Character:FindFirstChild("VD_ESP")
@@ -74,7 +95,7 @@ local function ClearESP()
     end
 
     for _, obj in pairs(Workspace:GetDescendants()) do
-        if obj.Name == "VD_ItemESP" then
+        if obj.Name == "VD_ObjESP" then
             obj:Destroy()
         end
     end
@@ -179,81 +200,81 @@ local function ESPLoop()
 end
 
 -- ==============================
--- ITEM ESP (Генераторы, Лут, Оружие)
+-- OBJECT ESP (Генераторы, Палетки, Окна, Крюки)
 -- ==============================
-local function ItemESPLoop()
-    StopLoop("ItemESP")
-    for _, bill in pairs(ItemCache) do
-        if bill then bill:Destroy() end
+local function GetObjectType(obj)
+    local name = obj.Name:lower()
+    
+    if name:find("generator") then
+        return "Generator"
+    elseif name:find("pallet") or name:find("board") then
+        return "Pallet"
+    elseif name:find("vault") or name:find("window") or name:find("obstacle") then
+        return "Vault"
+    elseif name:find("hook") or name:find("hanger") or name:find("suspend") then
+        return "Hook"
     end
-    table.clear(ItemCache)
+    return nil
+end
 
-    if not itemEspEnabled then return end
-
-    local function checkAndApplyESP(obj)
-        if not obj:IsA("BasePart") and not obj:IsA("Model") then return end
+local function ApplyObjectESP(obj)
+    if not objectEspEnabled then return end
+    
+    local objType = GetObjectType(obj)
+    if objType then
+        local color = colors[objType]
+        local target = (obj:IsA("Model") and (obj.PrimaryPart or obj:FindFirstChildOfClass("BasePart"))) or (obj:IsA("BasePart") and obj)
         
-        local name = obj.Name:lower()
-        local displayName = nil
-        local color = Color3.new(1, 1, 1)
-
-        -- Настройки обнаружения предметов по имени
-        if name:find("generator") then
-            displayName = "Генератор"
-            color = Color3.fromRGB(0, 180, 255)
-        elseif name:find("medkit") or name:find("bandage") or name:find("heal") then
-            displayName = "Аптечка"
-            color = Color3.fromRGB(0, 255, 100)
-        elseif name:find("gun") or name:find("pistol") or name:find("rifle") or name:find("shotgun") or name:find("ammo") then
-            displayName = "Оружие/Патроны"
-            color = Color3.fromRGB(255, 200, 0)
-        elseif name:find("chest") or name:find("crate") or name:find("loot") then
-            displayName = "Ящик с лутом"
-            color = Color3.fromRGB(150, 0, 255)
+        if target and not ObjectCache[obj] then
+            local hl = Instance.new("Highlight")
+            hl.Name = "VD_ObjESP"
+            hl.Adornee = obj
+            hl.FillColor = color
+            hl.OutlineColor = color
+            hl.FillTransparency = 0.5
+            hl.OutlineTransparency = 0
+            hl.Parent = obj
+            
+            ObjectCache[obj] = hl
         end
+    end
+end
 
-        if displayName then
-            local targetPart = obj:IsA("Model") and (obj:FindFirstChild("Engine") or obj:FindFirstChild("Main") or obj.PrimaryPart or obj:FindFirstChildOfClass("BasePart")) or obj
-            if targetPart and not ItemCache[obj] then
-                local bill = Instance.new("BillboardGui")
-                bill.Name = "VD_ItemESP"
-                bill.Size = UDim2.new(0, 120, 0, 30)
-                bill.AlwaysOnTop = true
-                bill.StudsOffset = Vector3.new(0, 1.5, 0)
-                
-                local label = Instance.new("TextLabel")
-                label.Size = UDim2.new(1, 0, 1, 0)
-                label.BackgroundTransparency = 1
-                label.Text = displayName
-                label.TextColor3 = color
-                label.TextStrokeColor3 = Color3.new(0, 0, 0)
-                label.TextStrokeTransparency = 0
-                label.Font = Enum.Font.GothamBold
-                label.TextSize = 12
-                label.Parent = bill
-
-                bill.Parent = targetPart
-                ItemCache[obj] = bill
+local function UpdateObjectColors()
+    for obj, hl in pairs(ObjectCache) do
+        if hl and hl.Parent then
+            local objType = GetObjectType(obj)
+            if objType then
+                hl.FillColor = colors[objType]
+                hl.OutlineColor = colors[objType]
             end
         end
     end
+end
 
-    -- Сканируем существующие объекты
+local function ObjectESPLoop()
+    StopLoop("ObjectESP")
+    for _, hl in pairs(ObjectCache) do
+        if hl then hl:Destroy() end
+    end
+    table.clear(ObjectCache)
+
+    if not objectEspEnabled then return end
+
     for _, obj in pairs(Workspace:GetDescendants()) do
-        checkAndApplyESP(obj)
+        ApplyObjectESP(obj)
     end
 
-    -- Отслеживаем новые спавны предметов на карте
-    Connections.ItemESP = Workspace.DescendantAdded:Connect(function(obj)
-        task.wait(0.2) -- Небольшая пауза для полной прогрузки объекта
-        if itemEspEnabled then
-            checkAndApplyESP(obj)
+    Connections.ObjectESP = Workspace.DescendantAdded:Connect(function(obj)
+        task.wait(0.2)
+        if objectEspEnabled then
+            ApplyObjectESP(obj)
         end
     end)
 end
 
 -- ==============================
--- SILENT AIM (ПЛАВНЫЙ)
+-- SILENT AIM
 -- ==============================
 local function SilentLoop()
     StopLoop("Silent")
@@ -275,6 +296,35 @@ local function SilentLoop()
 end
 
 -- ==============================
+-- FULLBRIGHT
+-- ==============================
+local function ToggleFullBright(state)
+    fullBrightEnabled = state
+    StopLoop("FullBright")
+    
+    if state then
+        -- Сохраняем оригинал
+        origBrightness = Lighting.Brightness
+        origClockTime = Lighting.ClockTime
+        origFogEnd = Lighting.FogEnd
+        origGlobalShadows = Lighting.GlobalShadows
+        
+        Connections.FullBright = RunService.Heartbeat:Connect(function()
+            Lighting.Brightness = 2
+            Lighting.ClockTime = 14
+            Lighting.FogEnd = 999999
+            Lighting.GlobalShadows = false
+        end)
+    else
+        -- Возвращаем исходные настройки
+        Lighting.Brightness = origBrightness
+        Lighting.ClockTime = origClockTime
+        Lighting.FogEnd = origFogEnd
+        Lighting.GlobalShadows = origGlobalShadows
+    end
+end
+
+-- ==============================
 -- GUI (Rayfield)
 -- ==============================
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
@@ -288,10 +338,12 @@ local Window = Rayfield:CreateWindow({
     KeySystem = false
 })
 
-local ESPTab = Window:CreateTab("👁 ESP")
+local ESPTab = Window:CreateTab("👁 Players")
+local ObjTab = Window:CreateTab("📦 Object ESP")
 local AimTab = Window:CreateTab("🎯 Aim")
 local MiscTab = Window:CreateTab("⚙️ Misc")
 
+-- Players Tab
 ESPTab:CreateToggle({
     Name = "ESP Players",
     CurrentValue = false,
@@ -310,15 +362,53 @@ ESPTab:CreateToggle({
     end
 })
 
-ESPTab:CreateToggle({
-    Name = "Item ESP",
+-- Object ESP Tab
+ObjTab:CreateToggle({
+    Name = "Enable Object ESP",
     CurrentValue = false,
     Callback = function(v)
-        itemEspEnabled = v
-        ItemESPLoop()
+        objectEspEnabled = v
+        ObjectESPLoop()
     end
 })
 
+ObjTab:CreateColorPicker({
+    Name = "Generators (Генераторы)",
+    Color = colors.Generator,
+    Callback = function(color)
+        colors.Generator = color
+        UpdateObjectColors()
+    end
+})
+
+ObjTab:CreateColorPicker({
+    Name = "Pallets (Палетки)",
+    Color = colors.Pallet,
+    Callback = function(color)
+        colors.Pallet = color
+        UpdateObjectColors()
+    end
+})
+
+ObjTab:CreateColorPicker({
+    Name = "Vaulting (Перелезание)",
+    Color = colors.Vault,
+    Callback = function(color)
+        colors.Vault = color
+        UpdateObjectColors()
+    end
+})
+
+ObjTab:CreateColorPicker({
+    Name = "Hooks (Подвешивание)",
+    Color = colors.Hook,
+    Callback = function(color)
+        colors.Hook = color
+        UpdateObjectColors()
+    end
+})
+
+-- Aim Tab
 AimTab:CreateToggle({
     Name = "Silent Aim",
     CurrentValue = false,
@@ -338,12 +428,23 @@ AimTab:CreateSlider({
     end
 })
 
+-- Misc Tab
+MiscTab:CreateToggle({
+    Name = "FullBright (Освещение карты)",
+    CurrentValue = false,
+    Callback = function(v)
+        ToggleFullBright(v)
+    end
+})
+
 MiscTab:CreateButton({
     Name = "❌ Close Script",
     Callback = function()
         StopLoop("ESP")
         StopLoop("Silent")
-        StopLoop("ItemESP")
+        StopLoop("ObjectESP")
+        StopLoop("FullBright")
+        ToggleFullBright(false)
         ClearESP()
         pcall(function() Rayfield:Destroy() end)
         print("[GOOD] Скрипт закрыт.")
@@ -352,9 +453,9 @@ MiscTab:CreateButton({
 
 Rayfield:Notify({
     Title = "VD ESP + Aim",
-    Content = "Загружено с Item ESP!",
+    Content = "Загружено успешно!",
     Duration = 3
 })
 
-print("[GOOD] Скрипт с Item ESP успешно инициализирован.")
+print("[GOOD] Скрипт успешно инициализирован.")
 
