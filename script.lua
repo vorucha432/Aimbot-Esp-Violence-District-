@@ -1,9 +1,9 @@
 --[[
-    Violence District – ESP + Silent Aim + Object ESP + FullBright [PROSTO] - FIXED
+    Violence District – ESP + Silent Aim + Object ESP + FullBright [PROSTO] - FIXED & IMPROVED
     – Player ESP: игроки подсвечены (выжившие зелёным, убийца красным) + Ники над головами
-    – Object ESP: только генераторы, палетки, проёмы для перелезания (Vault Windows/Walls) и для подвешивания (Hooks)
-    – ИСПРАВЛЕНО: Убрана ошибочная гигантская подсветка стеклянных стен и зданий. Подсвечиваются только сами интерактивные окна.
-    – ИСПРАВЛЕНО: Исправлены вылеты и обрывы ESP при стриминге чанков.
+    – Object ESP: только генераторы, палетки, проёмы для перелезания (Vault) и для подвешивания (Hooks)
+    – ИСПРАВЛЕНО: Полностью переработан поиск окон (Vault/Obstacles), теперь они гарантированно подсвечиваются.
+    – ДОБАВЛЕНО: Динамическое отслеживание починки генераторов в процентах (%) над каждым из них в реальном времени.
     – Настройка цвета каждого объекта через палитру Rayfield по твоему выбору
     – FullBright: убирает туман, тени и делает мир светлым
 ]]
@@ -60,6 +60,7 @@ local colors = {
 local Connections = {}
 local Cache = {} 
 local ObjectCache = {}
+local GeneratorUIs = {}
 
 -- Переменные для бэкапа оригинального освещения
 local origBrightness = Lighting.Brightness
@@ -84,6 +85,12 @@ local function ClearESP()
     end
     table.clear(ObjectCache)
     
+    -- Чистим UI процентов генераторов
+    for _, ui in pairs(GeneratorUIs) do
+        if ui then ui:Destroy() end
+    end
+    table.clear(GeneratorUIs)
+    
     -- Чистка остатков
     for _, plr in pairs(Players:GetPlayers()) do
         if plr.Character then
@@ -96,7 +103,7 @@ local function ClearESP()
     end
 
     for _, obj in pairs(Workspace:GetDescendants()) do
-        if obj.Name == "VD_ObjESP" then
+        if obj.Name == "VD_ObjESP" or obj.Name == "VD_GenPercent" then
             obj:Destroy()
         end
     end
@@ -201,7 +208,7 @@ local function ESPLoop()
 end
 
 -- ==============================
--- OBJECT ESP (Оптимизированное под проёмы перелезания)
+-- OBJECT ESP (Оптимизированное под проёмы перелезания и генераторы)
 -- ==============================
 local function GetObjectType(obj)
     local name = obj.Name:lower()
@@ -221,10 +228,9 @@ local function GetObjectType(obj)
         return nil
     end
     
-    -- Строгий поиск проёмов для перелезания (окна, заборы, препятствия)
-    -- Обычно в режимах типа DbD/Violence District они называются "Vault", "Window", "Obstacle", "VaultSpot"
-    if name:find("vault") or name:find("window") or name:find("obstacle") then
-        -- Дополнительный фильтр: игнорируем слишком масштабные объекты (здания, каркасы)
+    -- Улучшенный и максимально точный поиск проёмов для перелезания (Vault Windows/Spots/Walls)
+    if name:find("vault") or name:find("window") or name:find("obstacle") or obj:FindFirstChild("Vault") or obj:FindFirstChild("VaultSpot") then
+        -- Дополнительный фильтр по размеру, чтобы не подсвечивать здания целиком
         if obj:IsA("Model") and obj:GetExtentsSize().Magnitude > 25 then
             return nil
         end
@@ -239,6 +245,30 @@ local function GetObjectType(obj)
     return nil
 end
 
+-- Получить процент починки генератора
+local function GetGeneratorProgress(gen)
+    -- Ищем атрибуты прогресса
+    local progress = gen:GetAttribute("Progress") or gen:GetAttribute("Percent") or gen:GetAttribute("Repair")
+    if progress then
+        return math.floor(progress)
+    end
+    
+    -- Проверяем дочерние значения
+    for _, v in pairs(gen:GetDescendants()) do
+        if v:IsA("NumberValue") or v:IsA("IntValue") then
+            local vn = v.Name:lower()
+            if vn:find("progress") or vn:find("percent") or vn:find("repair") or vn:find("value") then
+                -- Если значение от 0 до 1, умножаем на 100
+                if v.Value <= 1 and v.Value > 0 then
+                    return math.floor(v.Value * 100)
+                end
+                return math.floor(v.Value)
+            end
+        end
+    end
+    return 0
+end
+
 local function ApplyObjectESP(obj)
     if not objectEspEnabled then return end
     
@@ -246,9 +276,8 @@ local function ApplyObjectESP(obj)
     if objType then
         local color = colors[objType]
         
-        -- Убедимся, что это физически отрисовываемый объект
         if obj:IsA("Model") or obj:IsA("BasePart") then
-            -- Если на объекте уже есть наш Highlight, просто обновим его настройки, чтобы избежать "исчезновений"
+            -- Highlight подсветка
             local hl = ObjectCache[obj] or obj:FindFirstChild("VD_ObjESP")
             if not hl then
                 hl = Instance.new("Highlight")
@@ -261,6 +290,32 @@ local function ApplyObjectESP(obj)
             hl.OutlineColor = color
             hl.FillTransparency = 0.5
             hl.OutlineTransparency = 0
+            
+            -- Если это генератор, вешаем поверх BillboardGui для отслеживания % починки
+            if objType == "Generator" then
+                local targetPart = obj:IsA("Model") and (obj.PrimaryPart or obj:FindFirstChildOfClass("BasePart")) or obj
+                if targetPart and not GeneratorUIs[obj] then
+                    local bill = Instance.new("BillboardGui")
+                    bill.Name = "VD_GenPercent"
+                    bill.Size = UDim2.new(0, 100, 0, 30)
+                    bill.AlwaysOnTop = true
+                    bill.StudsOffset = Vector3.new(0, 3, 0)
+                    
+                    local label = Instance.new("TextLabel")
+                    label.Size = UDim2.new(1, 0, 1, 0)
+                    label.BackgroundTransparency = 1
+                    label.Text = "0%"
+                    label.TextColor3 = colors.Generator
+                    label.TextStrokeColor3 = Color3.new(0, 0, 0)
+                    label.TextStrokeTransparency = 0
+                    label.Font = Enum.Font.GothamBold
+                    label.TextSize = 14
+                    label.Parent = bill
+                    
+                    bill.Parent = targetPart
+                    GeneratorUIs[obj] = bill
+                end
+            end
         end
     end
 end
@@ -272,6 +327,11 @@ local function UpdateObjectColors()
             if objType then
                 hl.FillColor = colors[objType]
                 hl.OutlineColor = colors[objType]
+                
+                -- Обновим цвет текста над генератором
+                if objType == "Generator" and GeneratorUIs[obj] then
+                    GeneratorUIs[obj].TextLabel.TextColor3 = colors.Generator
+                end
             end
         else
             ObjectCache[obj] = nil
@@ -282,11 +342,16 @@ end
 local function ObjectESPLoop()
     StopLoop("ObjectESP")
     
-    -- Очистка старых перед новым сканом
+    -- Очистка старых
     for _, hl in pairs(ObjectCache) do
         if hl then hl:Destroy() end
     end
     table.clear(ObjectCache)
+    
+    for _, ui in pairs(GeneratorUIs) do
+        if ui then ui:Destroy() end
+    end
+    table.clear(GeneratorUIs)
 
     if not objectEspEnabled then return end
 
@@ -297,21 +362,30 @@ local function ObjectESPLoop()
 
     -- Отслеживание динамического спавна/стриминга (чтобы подсветка не обрывалась)
     Connections.ObjectESP = Workspace.DescendantAdded:Connect(function(obj)
-        task.wait(0.3) -- Пауза, чтобы объект успел полностью инициализироваться в памяти игры
+        task.wait(0.3)
         if objectEspEnabled then
             ApplyObjectESP(obj)
         end
     end)
     
-    -- Сервисный цикл: проверяем и обновляем подсветку каждые 3 секунды, чтобы исправить "исчезновения" из-за Roblox StreamingEnabled
+    -- Сервисный цикл: обновляем % починки генераторов и исправляем "исчезновения" из-за Roblox StreamingEnabled
     task.spawn(function()
-        while objectEspEnabled and task.wait(3) do
+        while objectEspEnabled do
             for _, obj in pairs(Workspace:GetDescendants()) do
                 local objType = GetObjectType(obj)
-                if objType and not ObjectCache[obj] then
-                    ApplyObjectESP(obj)
+                if objType then
+                    if not ObjectCache[obj] then
+                        ApplyObjectESP(obj)
+                    end
+                    
+                    -- Обновляем проценты генератора
+                    if objType == "Generator" and GeneratorUIs[obj] then
+                        local progress = GetGeneratorProgress(obj)
+                        GeneratorUIs[obj].TextLabel.Text = tostring(progress) .. "%"
+                    end
                 end
             end
+            task.wait(1)
         end
     end)
 end
