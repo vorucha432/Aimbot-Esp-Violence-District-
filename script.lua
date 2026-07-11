@@ -1,10 +1,11 @@
 --[[
-    Violence District – ESP + Silent Aim + Object ESP + FullBright [PROSTO] - ULTIMATE FIX
+    Violence District – ESP + Silent Aim + Object ESP + FullBright [PROSTO] - ULTIMATE SAFE EDITION
     – Player ESP: игроки подсвечены (выжившие зелёным, убийца красным) + Ники над головами
     – Object ESP: только генераторы (+1 точный индикатор %), палетки, места перелезания (Vault), крюки (Hooks) и ворота (Gates)
-    – ИСПРАВЛЕНО: Полностью убран спам процентов на генераторах (теперь строго один маркер прогресса).
-    – ИСПРАВЛЕНО: Убрана лишняя подсветка огромных коробок/стекол. Подсвечивается только строго то, что имеет отношение к Vault.
-    – ДОБАВЛЕНО: Подсветка ворот побега (Gates/Escape) с выбором цвета.
+    – ИСПРАВЛЕНО: Убран спам процентов на генераторах (строго 1 маркер прогресса).
+    – ИСПРАВЛЕНО: Полностью исключена подсветка гигантских стен, крыш и коробок.
+    – ИСПРАВЛЕНО: Исправлен баг, из-за которого пропадал ESP генераторов.
+    – ИСПРАВЛЕНО: Окна и проёмы для перелезания (Vault) теперь стабильно и аккуратно подсвечиваются.
     – Настройка цвета каждого объекта через палитру Rayfield по твоему выбору
     – FullBright: убирает туман, тени и делает мир светлым
 ]]
@@ -56,7 +57,7 @@ local colors = {
     Pallet = Color3.fromRGB(255, 200, 0),
     Vault = Color3.fromRGB(0, 255, 100),
     Hook = Color3.fromRGB(255, 50, 50),
-    Gate = Color3.fromRGB(200, 0, 200) -- Цвет ворот по умолчанию (пурпурный)
+    Gate = Color3.fromRGB(200, 0, 200)
 }
 
 local Connections = {}
@@ -210,46 +211,59 @@ local function ESPLoop()
 end
 
 -- ==============================
--- OBJECT ESP (Строгий и точный поиск)
+-- СТРОГИЙ СОРТИРОВЩИК ОБЪЕКТОВ ESP
 -- ==============================
 local function GetObjectType(obj)
     local name = obj.Name:lower()
     
-    -- Игнорируем элементы персонажей игроков
+    -- Пропускаем элементы локального игрока и других выживших/убийц
     if obj:FindFirstAncestorOfClass("Player") or obj:FindFirstAncestorOfClass("Character") then return nil end
 
     -- Строго генераторы
-    if name:find("generator") then
+    if name == "generator" or name:find("^generator") then
         return "Generator"
     end
     
     -- Строго палетки
-    if name:find("pallet") then
+    if name == "pallet" or name == "palletmodel" then
         return "Pallet"
     end
     
-    -- Строго проемы для перелезания (Vault)
-    -- Не ловим окна построек, декораций и коробок
-    if name == "vault" or name:find("^vault") or name:find("%Wvault") then
+    -- Строго места для перелезания (Окна/Vault)
+    if name == "vault" or name == "vaulting" or name == "vaultspot" or name:find("vault_obstacle") then
+        -- Фильтруем огромные объекты по размеру
+        local size = 0
+        if obj:IsA("Model") then
+            size = obj:GetExtentsSize().Magnitude
+        elseif obj:IsA("BasePart") then
+            size = obj.Size.Magnitude
+        end
+        if size > 25 then return nil end -- Защита от выделения зданий
         return "Vault"
     end
     
     -- Строго крюки
-    if name:find("hook") then
+    if name == "hook" or name == "hookmodel" then
         return "Hook"
     end
 
-    -- Ворота побега
-    if name:find("gate") or name:find("escape") or name:find("exit") or name:find("door") then
-        -- Фильтруем обычные межкомнатные двери, оставляя только ворота
-        if name:find("room") or name:find("closet") then return nil end
+    -- Ворота побега (Рубильники и проёмы ворот)
+    if name == "gateswitch" or name == "escapeswitch" or name == "exitgate" or name == "gate_switch" then
+        -- Исключаем огромные части карты
+        local size = 0
+        if obj:IsA("Model") then
+            size = obj:GetExtentsSize().Magnitude
+        elseif obj:IsA("BasePart") then
+            size = obj.Size.Magnitude
+        end
+        if size > 35 then return nil end -- Защита от выделения гигантских стен ворот
         return "Gate"
     end
     
     return nil
 end
 
--- Проверка, не подсвечен ли уже родительский объект
+-- Предотвращение наложений на родительские объекты
 local function IsAlreadyTracked(obj)
     local current = obj.Parent
     while current and current ~= Workspace do
@@ -287,7 +301,6 @@ local function ApplyObjectESP(obj)
     
     local objType = GetObjectType(obj)
     if objType then
-        -- Если родительская модель уже подсвечена, то дочерние элементы мы не трогаем (предотвращает наложение)
         if IsAlreadyTracked(obj) then return end
 
         local color = colors[objType]
@@ -307,9 +320,9 @@ local function ApplyObjectESP(obj)
             hl.FillTransparency = 0.5
             hl.OutlineTransparency = 0
             
-            -- Если это генератор, вешаем ОДИН BillboardGui на основную часть модели
+            -- Если это генератор, вешаем СТРОГО один индикатор процентов починки
             if objType == "Generator" then
-                local targetPart = obj:IsA("Model") and (obj.PrimaryPart or obj:FindFirstChild("Engine") or obj:FindFirstChildOfClass("BasePart")) or obj
+                local targetPart = obj:IsA("Model") and (obj.PrimaryPart or obj:FindFirstChild("Engine") or obj:FindFirstChild("Body") or obj:FindFirstChildOfClass("BasePart")) or obj
                 if targetPart and not GeneratorUIs[obj] and not targetPart:FindFirstChild("VD_GenPercent") then
                     local bill = Instance.new("BillboardGui")
                     bill.Name = "VD_GenPercent"
@@ -365,12 +378,12 @@ local function ObjectESPLoop()
 
     if not objectEspEnabled then return end
 
-    -- Поиск объектов
+    -- Первоначальный поиск объектов
     for _, obj in pairs(Workspace:GetDescendants()) do
         ApplyObjectESP(obj)
     end
 
-    -- Отслеживание динамического спавна/стриминга
+    -- Отслеживание динамического спавна/стриминга (чтобы ничего не пропадало)
     Connections.ObjectESP = Workspace.DescendantAdded:Connect(function(obj)
         task.wait(0.3)
         if objectEspEnabled then
@@ -378,15 +391,22 @@ local function ObjectESPLoop()
         end
     end)
     
-    -- Сервисный цикл обновления процентов
+    -- Сервисный цикл обновления процентов и поддержания стабильной детекции
     task.spawn(function()
         while objectEspEnabled do
-            for obj, ui in pairs(GeneratorUIs) do
-                if obj and obj.Parent and ui and ui.Parent then
-                    local progress = GetGeneratorProgress(obj)
-                    ui.TextLabel.Text = tostring(progress) .. "%"
-                else
-                    GeneratorUIs[obj] = nil
+            for _, obj in pairs(Workspace:GetDescendants()) do
+                local objType = GetObjectType(obj)
+                if objType then
+                    -- Если объект прогрузился заново, восстанавливаем подсветку
+                    if not ObjectCache[obj] then
+                        ApplyObjectESP(obj)
+                    end
+                    
+                    -- Обновляем проценты генераторов
+                    if objType == "Generator" and GeneratorUIs[obj] then
+                        local progress = GetGeneratorProgress(obj)
+                        GeneratorUIs[obj].TextLabel.Text = tostring(progress) .. "%"
+                    end
                 end
             end
             task.wait(1)
