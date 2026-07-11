@@ -1,7 +1,7 @@
 --[[
-    Violence District – ESP + Silent Aim [PROSTO] - FIXED
-    – Исправлены критические утечки памяти в ESP
-    – Оптимизирован поиск игроков и наведение аима
+    Violence District – ESP + Silent Aim + Item ESP [PROSTO] - UPDATED
+    – Исправлены утечки памяти и лаги
+    – Добавлен полноценный Item ESP (генераторы, лут, оружие)
 ]]
 
 local Players = game:GetService("Players")
@@ -9,7 +9,7 @@ local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
 local LP = Players.LocalPlayer
-local Camera = Workspace.CurrentCamera -- Исправлено на Workspace с большой буквы
+local Camera = Workspace.CurrentCamera
 
 -- ==============================
 -- ПРОСТОЙ ПОИСК БЛИЖАЙШЕГО ИГРОКА
@@ -41,12 +41,14 @@ local espEnabled = false
 local showNames = false
 local silentAim = false
 local aimSmooth = 0.3
+local itemEspEnabled = false
 
 local Connections = {}
-local Cache = {} -- Новый кеш для хранения объектов ESP без спавна каждую секунду
+local Cache = {} 
+local ItemCache = {}
 
 -- ==============================
--- ОЧИСТКА ESP (ОПТИМИЗИРОВАННАЯ)
+-- ОЧИСТКА ВСЕХ ВИДОВ ESP
 -- ==============================
 local function ClearESP()
     for char, elements in pairs(Cache) do
@@ -55,7 +57,12 @@ local function ClearESP()
     end
     table.clear(Cache)
     
-    -- Чистка остатков по именам (на всякий случай, без GetDescendants на весь Workspace)
+    for _, bill in pairs(ItemCache) do
+        if bill then bill:Destroy() end
+    end
+    table.clear(ItemCache)
+    
+    -- Чистка остатков в Workspace
     for _, plr in pairs(Players:GetPlayers()) do
         if plr.Character then
             local hl = plr.Character:FindFirstChild("VD_ESP")
@@ -63,6 +70,12 @@ local function ClearESP()
             local head = plr.Character:FindFirstChild("Head")
             local bill = head and head:FindFirstChild("VD_Name")
             if bill then bill:Destroy() end
+        end
+    end
+
+    for _, obj in pairs(Workspace:GetDescendants()) do
+        if obj.Name == "VD_ItemESP" then
+            obj:Destroy()
         end
     end
 end
@@ -75,11 +88,17 @@ local function StopLoop(name)
 end
 
 -- ==============================
--- ESP (БЕЗ СПАМА И ЛАГОВ)
+-- PLAYER ESP
 -- ==============================
 local function ESPLoop()
     StopLoop("ESP")
-    if not espEnabled then ClearESP() return end
+    if not espEnabled then 
+        for char, elements in pairs(Cache) do
+            if elements.Highlight then elements.Highlight:Destroy(); elements.Highlight = nil end
+            if elements.Billboard then elements.Billboard:Destroy(); elements.Billboard = nil end
+        end
+        return 
+    end
 
     Connections.ESP = RunService.Heartbeat:Connect(function()
         for _, plr in pairs(Players:GetPlayers()) do
@@ -89,7 +108,6 @@ local function ESPLoop()
                 local head = char:FindFirstChild("Head")
                 
                 if hum and hum.Health > 0 then
-                    -- Определение роли
                     local isKiller = false
                     if plr.Team and plr.Team.Name == "Killer" then isKiller = true end
                     if plr:GetAttribute("Role") == "Killer" then isKiller = true end
@@ -97,12 +115,10 @@ local function ESPLoop()
 
                     local color = isKiller and Color3.new(1,0,0) or Color3.new(0,1,0)
 
-                    -- Инициализация кеша для персонажа
                     if not Cache[char] then
                         Cache[char] = {}
                     end
 
-                    -- Отрисовка Highlight
                     local hl = Cache[char].Highlight or char:FindFirstChild("VD_ESP")
                     if not hl then
                         hl = Instance.new("Highlight")
@@ -115,7 +131,6 @@ local function ESPLoop()
                     hl.OutlineColor = color
                     hl.FillTransparency = 0.5
 
-                    -- Отрисовка Имени
                     if showNames and head then
                         local bill = Cache[char].Billboard or head:FindFirstChild("VD_Name")
                         if not bill then
@@ -146,7 +161,6 @@ local function ESPLoop()
                         end
                     end
                 else
-                    -- Если игрок мертв, убираем его элементы
                     if Cache[char] then
                         if Cache[char].Highlight then Cache[char].Highlight:Destroy() end
                         if Cache[char].Billboard then Cache[char].Billboard:Destroy() end
@@ -156,7 +170,6 @@ local function ESPLoop()
             end
         end
         
-        -- Очистка кеша для вышедших игроков
         for char, _ in pairs(Cache) do
             if not char or not char.Parent then
                 Cache[char] = nil
@@ -166,13 +179,86 @@ local function ESPLoop()
 end
 
 -- ==============================
--- SILENT AIM (ПЛАВНЫЙ И НАДЕЖНЫЙ)
+-- ITEM ESP (Генераторы, Лут, Оружие)
+-- ==============================
+local function ItemESPLoop()
+    StopLoop("ItemESP")
+    for _, bill in pairs(ItemCache) do
+        if bill then bill:Destroy() end
+    end
+    table.clear(ItemCache)
+
+    if not itemEspEnabled then return end
+
+    local function checkAndApplyESP(obj)
+        if not obj:IsA("BasePart") and not obj:IsA("Model") then return end
+        
+        local name = obj.Name:lower()
+        local displayName = nil
+        local color = Color3.new(1, 1, 1)
+
+        -- Настройки обнаружения предметов по имени
+        if name:find("generator") then
+            displayName = "Генератор"
+            color = Color3.fromRGB(0, 180, 255)
+        elseif name:find("medkit") or name:find("bandage") or name:find("heal") then
+            displayName = "Аптечка"
+            color = Color3.fromRGB(0, 255, 100)
+        elseif name:find("gun") or name:find("pistol") or name:find("rifle") or name:find("shotgun") or name:find("ammo") then
+            displayName = "Оружие/Патроны"
+            color = Color3.fromRGB(255, 200, 0)
+        elseif name:find("chest") or name:find("crate") or name:find("loot") then
+            displayName = "Ящик с лутом"
+            color = Color3.fromRGB(150, 0, 255)
+        end
+
+        if displayName then
+            local targetPart = obj:IsA("Model") and (obj:FindFirstChild("Engine") or obj:FindFirstChild("Main") or obj.PrimaryPart or obj:FindFirstChildOfClass("BasePart")) or obj
+            if targetPart and not ItemCache[obj] then
+                local bill = Instance.new("BillboardGui")
+                bill.Name = "VD_ItemESP"
+                bill.Size = UDim2.new(0, 120, 0, 30)
+                bill.AlwaysOnTop = true
+                bill.StudsOffset = Vector3.new(0, 1.5, 0)
+                
+                local label = Instance.new("TextLabel")
+                label.Size = UDim2.new(1, 0, 1, 0)
+                label.BackgroundTransparency = 1
+                label.Text = displayName
+                label.TextColor3 = color
+                label.TextStrokeColor3 = Color3.new(0, 0, 0)
+                label.TextStrokeTransparency = 0
+                label.Font = Enum.Font.GothamBold
+                label.TextSize = 12
+                label.Parent = bill
+
+                bill.Parent = targetPart
+                ItemCache[obj] = bill
+            end
+        end
+    end
+
+    -- Сканируем существующие объекты
+    for _, obj in pairs(Workspace:GetDescendants()) do
+        checkAndApplyESP(obj)
+    end
+
+    -- Отслеживаем новые спавны предметов на карте
+    Connections.ItemESP = Workspace.DescendantAdded:Connect(function(obj)
+        task.wait(0.2) -- Небольшая пауза для полной прогрузки объекта
+        if itemEspEnabled then
+            checkAndApplyESP(obj)
+        end
+    end)
+end
+
+-- ==============================
+-- SILENT AIM (ПЛАВНЫЙ)
 -- ==============================
 local function SilentLoop()
     StopLoop("Silent")
     if not silentAim then return end
     
-    -- Переведено на RenderStepped для исключения тряски камеры
     Connections.Silent = RunService.RenderStepped:Connect(function()
         local target = GetClosestPlayer()
         if target and target.Character then
@@ -224,6 +310,15 @@ ESPTab:CreateToggle({
     end
 })
 
+ESPTab:CreateToggle({
+    Name = "Item ESP",
+    CurrentValue = false,
+    Callback = function(v)
+        itemEspEnabled = v
+        ItemESPLoop()
+    end
+})
+
 AimTab:CreateToggle({
     Name = "Silent Aim",
     CurrentValue = false,
@@ -248,6 +343,7 @@ MiscTab:CreateButton({
     Callback = function()
         StopLoop("ESP")
         StopLoop("Silent")
+        StopLoop("ItemESP")
         ClearESP()
         pcall(function() Rayfield:Destroy() end)
         print("[GOOD] Скрипт закрыт.")
@@ -256,8 +352,9 @@ MiscTab:CreateButton({
 
 Rayfield:Notify({
     Title = "VD ESP + Aim",
-    Content = "Загружено. Ошибки исправлены.",
+    Content = "Загружено с Item ESP!",
     Duration = 3
 })
 
-print("[GOOD] Простой ESP + Silent Aim загружен.")
+print("[GOOD] Скрипт с Item ESP успешно инициализирован.")
+
